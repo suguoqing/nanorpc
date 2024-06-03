@@ -51,7 +51,7 @@ set (LIBRARIES "")
 if (NOT NANORPC_PURE_CORE)
 
     if (NOT DEFINED BOOST_ROOT)
-        find_package(Boost 1.83.0 REQUIRED)
+        find_package(Boost 1.67.0 REQUIRED)
         if (NOT DEFINED Boost_FOUND)
             message(FATAL_ERROR "Boost_INCLUDE_DIRS is not found.")
         endif()
