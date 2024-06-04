@@ -112,9 +112,9 @@ public:
         request->target(location);
         request->set(boost::beast::http::field::host, host);
         request->set(boost::beast::http::field::user_agent, constants::user_agent_name);
-        request->set(boost::beast::http::field::content_length, buffer.size());
+        request->set(boost::beast::http::field::content_length, std::to_string(buffer.size()));
         request->set(boost::beast::http::field::content_type, constants::content_type);
-        request->set(boost::beast::http::field::keep_alive, request->keep_alive());
+        request->set(boost::beast::http::field::keep_alive, std::to_string(request->keep_alive()));
 
         auto self = shared_from_this();
 

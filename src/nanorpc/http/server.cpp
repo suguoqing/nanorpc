@@ -68,7 +68,7 @@ public:
             {
                 if (!ec)
                 {
-                    utility::post(self->socket_.get_io_context(), [self] { self->read(); }, self->error_handler_ );
+                utility::post(static_cast<boost::asio::io_context&>(self->socket_.get_executor().context()), [self] { self->read(); }, self->error_handler_ );
                 }
                 else
                 {
@@ -81,14 +81,14 @@ public:
                 }
             };
 
-        utility::post(socket_.get_io_context(), [self, func = std::move(on_handshake)]
+        utility::post(static_cast<boost::asio::io_context&>(self->socket_.get_executor().context()), [self, func = std::move(on_handshake)]
                 { self->handshake(std::move(func)); }, error_handler_ );
 
     }
 
 protected:
     using socket_type = boost::asio::ip::tcp::socket;
-    using strand_type = boost::asio::strand<boost::asio::io_context::executor_type>;
+    using strand_type = boost::asio::strand<boost::asio::any_io_executor>;
 
     using buffer_type = boost::beast::flat_buffer;
     using buffer_ptr = std::shared_ptr<buffer_type>;
@@ -169,7 +169,7 @@ private:
         if (!get_socket().is_open())
             return;
 
-        utility::post(socket_.get_io_context(),
+        utility::post(static_cast<boost::asio::io_context&>(socket_.get_executor().context()),
                 [self = shared_from_this()]
                 {
                     boost::system::error_code ec;
@@ -191,7 +191,7 @@ private:
 
     void handle_request(request_ptr req)
     {
-        auto const target = req->target().to_string();
+        auto const target = req->target();
         auto const need_eof = req->need_eof();
 
         auto reply = [self = shared_from_this()] (auto resp)
@@ -235,7 +235,7 @@ private:
                 res.set(boost::beast::http::field::server, constants::server_name);
                 res.set(boost::beast::http::field::content_type, constants::content_type);
                 res.keep_alive(req->keep_alive() && !req->need_eof());
-                res.body() = "The resource \"" + target + "\" was not found.";
+                res.body() = "The resource \"" + std::string(target) + "\" was not found.";
                 res.prepare_payload();
                 return res;
             };
@@ -247,7 +247,7 @@ private:
                 res.set(boost::beast::http::field::server, constants::server_name);
                 res.set(boost::beast::http::field::content_type, constants::content_type);
                 res.keep_alive(req->keep_alive() && !req->need_eof());
-                res.body() = "An error occurred: \"" + what.to_string() + "\"";
+                res.body() = "An error occurred: \"" + std::string(what) + "\"";
                 res.prepare_payload();
                 return res;
             };
@@ -259,7 +259,7 @@ private:
                 res.set(boost::beast::http::field::server, constants::server_name);
                 res.set(boost::beast::http::field::content_type, constants::content_type);
                 res.keep_alive(req->keep_alive() && !req->need_eof());
-                res.body() = why.to_string();
+                res.body() = why;
                 res.prepare_payload();
                 return res;
             };
