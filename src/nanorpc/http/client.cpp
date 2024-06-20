@@ -76,7 +76,7 @@ public:
                 }
             };
 
-        utility::post(context_,
+        utility::post(context_.get_executor(),
                 [&] { connect(endpoints, std::move(on_connect)); } );
 
         promise.get_future().get();;
@@ -96,7 +96,7 @@ public:
                         "Failed to close session.");
             };
 
-        utility::post(context_, std::move(close_connection));
+        utility::post(context_.get_executor(), std::move(close_connection));
     }
 
     core::type::buffer send(core::type::buffer const &buffer, std::string const &location, std::string const &host)
@@ -154,7 +154,7 @@ public:
 
                     if (!ec)
                     {
-                        utility::post(self->context_, std::move(receive));
+                        utility::post(self->context_.get_executor(), std::move(receive));
                     }
                     else
                     {
@@ -328,19 +328,19 @@ public:
         for (auto i = workers_count_ ; i ; --i)
         {
             workers.emplace_back(
-                    [self = this]
+                [self = this]
+                {
+                    try
                     {
-                        try
-                        {
-                            self->context_.run();
-                        }
-                        catch (std::exception const &e)
-                        {
-                            utility::handle_error<exception::client>(self->error_handler_, e,
-                                    "[nanorpc::client::run] Failed to run.");
-                            std::exit(EXIT_FAILURE);
-                        }
+                        self->context_.run();
                     }
+                    catch (std::exception const &e)
+                    {
+                        utility::handle_error<exception::client>(self->error_handler_, e,
+                                                                 "[nanorpc::client::run] Failed to run.");
+                        std::exit(EXIT_FAILURE);
+                    }
+                }
                 );
         }
 
@@ -356,19 +356,19 @@ public:
         context_.stop();
         std::exchange(session_queue_, session_queue_type{});
         for_each(begin(workers_), end(workers_), [&] (std::thread &t)
-                {
-                    try
-                    {
-                        t.join();
-                    }
-                    catch (std::exception const &e)
-                    {
-                        utility::handle_error<exception::client>(error_handler_, e,
-                                "[nanorpc::client::stop] Failed to stop.");
-                        std::exit(EXIT_FAILURE);
-                    }
-                }
-            );
+                 {
+                     try
+                     {
+                         t.join();
+                     }
+                     catch (std::exception const &e)
+                     {
+                         utility::handle_error<exception::client>(error_handler_, e,
+                                                                  "[nanorpc::client::stop] Failed to stop.");
+                         std::exit(EXIT_FAILURE);
+                     }
+                 }
+                 );
 
         workers_.clear();
     }
@@ -405,7 +405,7 @@ private:
     threads_type workers_;
 
     virtual session_ptr make_session(boost::asio::io_context &io_context,
-            core::type::error_handler const &error_handler) = 0;
+                                     core::type::error_handler const &error_handler) = 0;
 
     session_ptr get_session()
     {
@@ -449,7 +449,7 @@ public:
 
 private:
     virtual session_ptr make_session(boost::asio::io_context &io_context,
-            core::type::error_handler const &error_handler) override final
+                                     core::type::error_handler const &error_handler) override final
     {
         return std::make_shared<session>(io_context, error_handler);
     }
@@ -465,14 +465,14 @@ private:
 
     private:
         virtual void connect(boost::asio::ip::tcp::resolver::results_type const &endpoints,
-                std::function<void (boost::system::error_code const &)> on_connect) override final
+                             std::function<void (boost::system::error_code const &)> on_connect) override final
         {
             boost::asio::async_connect(get_socket(), std::begin(endpoints), std::end(endpoints),
-                    [func = std::move(on_connect)] (boost::system::error_code const &ec, auto)
-                    {
-                        func(ec);
-                    }
-                );
+                                       [func = std::move(on_connect)] (boost::system::error_code const &ec, auto)
+                                       {
+                                           func(ec);
+                                       }
+                                       );
         }
 
         virtual void close(boost::system::error_code &ec) override final
@@ -488,7 +488,7 @@ private:
 };
 
 client::client(std::string_view host, std::string_view port, std::size_t workers, std::string_view location,
-        core::type::error_handler error_handler)
+               core::type::error_handler error_handler)
     : impl_{std::make_shared<impl>(std::move(host), std::move(port), workers, std::move(error_handler))}
 {
     impl_->init_executor(std::move(location));
@@ -531,7 +531,7 @@ class client::impl
 {
 public:
     impl(boost::asio::ssl::context ssl_context, std::string_view host, std::string_view port,
-            std::size_t workers, core::type::error_handler error_handler)
+         std::size_t workers, core::type::error_handler error_handler)
         : http::detail::client{std::move(host), std::move(port), workers, std::move(error_handler)}
         , ssl_context_{std::move(ssl_context)}
     {
@@ -541,7 +541,7 @@ private:
     boost::asio::ssl::context ssl_context_;
 
     virtual session_ptr make_session(boost::asio::io_context &io_context,
-            core::type::error_handler const &error_handler) override final
+                                     core::type::error_handler const &error_handler) override final
     {
         return std::make_shared<session>(io_context, ssl_context_, error_handler);
     }
@@ -558,30 +558,30 @@ private:
 
     private:
         virtual void connect(boost::asio::ip::tcp::resolver::results_type const &endpoints,
-                std::function<void (boost::system::error_code const &)> on_connect) override final
+                             std::function<void (boost::system::error_code const &)> on_connect) override final
         {
             boost::asio::async_connect(get_socket().next_layer(), std::begin(endpoints), std::end(endpoints),
-                    [this, func = std::move(on_connect)] (boost::system::error_code const &ec, auto)
-                    {
-                        std::promise<bool> promise;
+                                       [this, func = std::move(on_connect)] (boost::system::error_code const &ec, auto)
+                                       {
+                                           std::promise<bool> promise;
 
-                        get_socket().async_handshake(boost::asio::ssl::stream_base::client,
-                                [&promise] (boost::system::error_code const &ec)
-                                {
-                                    if (ec)
-                                    {
-                                        auto exception = exception::client{"Failed to do handshake. " + ec.message()};
-                                        promise.set_exception(std::make_exception_ptr(std::move(exception)));
-                                        return;
-                                    }
+                                           get_socket().async_handshake(boost::asio::ssl::stream_base::client,
+                                                                        [&promise] (boost::system::error_code const &ec)
+                                                                        {
+                                                                            if (ec)
+                                                                            {
+                                                                                auto exception = exception::client{"Failed to do handshake. " + ec.message()};
+                                                                                promise.set_exception(std::make_exception_ptr(std::move(exception)));
+                                                                                return;
+                                                                            }
 
-                                    promise.set_value(true);
-                                });
+                                                                            promise.set_value(true);
+                                                                        });
 
-                        promise.get_future().get();
-                        func(ec);
-                    }
-                );
+                                           promise.get_future().get();
+                                           func(ec);
+                                       }
+                                       );
         }
 
         virtual void close(boost::system::error_code &ec) override final
@@ -590,13 +590,13 @@ private:
             if (!get_socket().next_layer().is_open())
                 return;
             get_socket().async_shutdown([] (boost::system::error_code const &ec)
-                    { boost::ignore_unused(ec); } );
+                                        { boost::ignore_unused(ec); } );
         }
     };
 };
 
 client::client(boost::asio::ssl::context context, std::string_view host, std::string_view port, std::size_t workers,
-            std::string_view location, core::type::error_handler error_handler)
+               std::string_view location, core::type::error_handler error_handler)
     : impl_{std::make_shared<impl>(std::move(context), std::move(host), std::move(port), workers, std::move(error_handler))}
 {
     impl_->init_executor(std::move(location));

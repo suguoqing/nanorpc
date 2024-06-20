@@ -65,24 +65,24 @@ public:
         auto self = shared_from_this();
 
         auto on_handshake = [self] (boost::system::error_code const &ec)
+        {
+            if (!ec)
             {
-                if (!ec)
-                {
-                utility::post(static_cast<boost::asio::io_context&>(self->socket_.get_executor().context()), [self] { self->read(); }, self->error_handler_ );
-                }
-                else
-                {
-                    utility::handle_error<exception::server>(self->error_handler_,
-                    std::make_exception_ptr(std::runtime_error{ec.message()}),
-                    "[nanorpc::http::detail::server::session::run] ",
-                    "Failed to do handshake.");
+                utility::post(self->socket_.get_executor(), [self] { self->read(); }, self->error_handler_ );
+            }
+            else
+            {
+                utility::handle_error<exception::server>(self->error_handler_,
+                                                         std::make_exception_ptr(std::runtime_error{ec.message()}),
+                                                         "[nanorpc::http::detail::server::session::run] ",
+                                                         "Failed to do handshake.");
 
-                    self->close();
-                }
-            };
+                self->close();
+            }
+        };
 
-        utility::post(static_cast<boost::asio::io_context&>(self->socket_.get_executor().context()), [self, func = std::move(on_handshake)]
-                { self->handshake(std::move(func)); }, error_handler_ );
+        utility::post(socket_.get_executor(), [self, func = std::move(on_handshake)]
+                      { self->handshake(std::move(func)); }, error_handler_ );
 
     }
 
@@ -129,37 +129,37 @@ private:
         auto request = std::make_shared<request_type>();
 
         auto on_read = [self = shared_from_this(), request] (boost::system::error_code const &ec) noexcept
+        {
+            try
             {
-                try
+                if (ec == boost::asio::error::operation_aborted)
+                    return;
+
+                if (ec == boost::beast::http::error::end_of_stream)
                 {
-                    if (ec == boost::asio::error::operation_aborted)
-                        return;
-
-                    if (ec == boost::beast::http::error::end_of_stream)
-                    {
-                        self->close();
-                        return;
-                    }
-
-                    auto const keep_alive = request->keep_alive();
-                    auto const need_eof = request->need_eof();
-
-                    self->handle_request(std::move(request));
-
-                    if (keep_alive && self->get_socket().is_open())
-                        self->read();
-
-                    if ((need_eof || !keep_alive) && self->get_socket().is_open())
-                        self->close();
-                }
-                catch (std::exception const &e)
-                {
-                    utility::handle_error<exception::server>(self->error_handler_, e,
-                            "[nanorpc::http::detail::server::session::read] ",
-                            "Failed to handle request.");
                     self->close();
+                    return;
                 }
-            };
+
+                auto const keep_alive = request->keep_alive();
+                auto const need_eof = request->need_eof();
+
+                self->handle_request(std::move(request));
+
+                if (keep_alive && self->get_socket().is_open())
+                    self->read();
+
+                if ((need_eof || !keep_alive) && self->get_socket().is_open())
+                    self->close();
+            }
+            catch (std::exception const &e)
+            {
+                utility::handle_error<exception::server>(self->error_handler_, e,
+                                                         "[nanorpc::http::detail::server::session::read] ",
+                                                         "Failed to handle request.");
+                self->close();
+            }
+        };
 
         read(buffer, request, std::move(on_read));
     }
@@ -169,24 +169,24 @@ private:
         if (!get_socket().is_open())
             return;
 
-        utility::post(static_cast<boost::asio::io_context&>(socket_.get_executor().context()),
-                [self = shared_from_this()]
-                {
-                    boost::system::error_code ec;
-                    self->close(ec);
-                    if (ec)
-                    {
-                        if (ec != boost::asio::error::operation_aborted)
-                        {
-                            utility::handle_error<exception::server>(self->error_handler_,
-                                    std::make_exception_ptr(std::runtime_error{ec.message()}),
-                                    "[nanorpc::http::detail::server::session::close] ",
-                                    "Failed to close socket.");
-                        }
-                    }
-                },
-                error_handler_
-            );
+        utility::post(socket_.get_executor(),
+                      [self = shared_from_this()]
+                      {
+                          boost::system::error_code ec;
+                          self->close(ec);
+                          if (ec)
+                          {
+                              if (ec != boost::asio::error::operation_aborted)
+                              {
+                                  utility::handle_error<exception::server>(self->error_handler_,
+                                                                           std::make_exception_ptr(std::runtime_error{ec.message()}),
+                                                                           "[nanorpc::http::detail::server::session::close] ",
+                                                                           "Failed to close socket.");
+                              }
+                          }
+                      },
+                      error_handler_
+                      );
     }
 
     void handle_request(request_ptr req)
@@ -195,74 +195,74 @@ private:
         auto const need_eof = req->need_eof();
 
         auto reply = [self = shared_from_this()] (auto resp)
+        {
+            auto response = std::make_shared<response_type>(std::move(resp));
+
+            auto on_write = [self] (boost::system::error_code const &ec)
             {
-                auto response = std::make_shared<response_type>(std::move(resp));
+                if (ec == boost::asio::error::operation_aborted || ec == boost::asio::error::broken_pipe)
+                    return;
 
-                auto on_write = [self] (boost::system::error_code const &ec)
-                    {
-                        if (ec == boost::asio::error::operation_aborted || ec == boost::asio::error::broken_pipe)
-                            return;
+                if (!ec)
+                    return;
 
-                        if (!ec)
-                            return;
+                utility::handle_error<exception::server>(self->error_handler_,
+                                                         std::make_exception_ptr(std::runtime_error{ec.message()}),
+                                                         "[nanorpc::http::detail::server::session::on_write] ",
+                                                         "Failed to write data.");
 
-                        utility::handle_error<exception::server>(self->error_handler_,
-                                std::make_exception_ptr(std::runtime_error{ec.message()}),
-                                "[nanorpc::http::detail::server::session::on_write] ",
-                                "Failed to write data.");
-
-                        self->close();
-                    };
-
-                self->write(response, std::move(on_write) );
+                self->close();
             };
+
+            self->write(response, std::move(on_write) );
+        };
 
         auto const ok =
             [&req](core::type::buffer buffer)
-            {
-                response_type res{boost::beast::http::status::ok, req->version()};
-                res.set(boost::beast::http::field::server, constants::server_name);
-                res.set(boost::beast::http::field::content_type, constants::content_type);
-                res.keep_alive(req->keep_alive() && !req->need_eof());
-                res.body().assign({begin(buffer), end(buffer)});
-                res.prepare_payload();
-                return res;
-            };
+        {
+            response_type res{boost::beast::http::status::ok, req->version()};
+            res.set(boost::beast::http::field::server, constants::server_name);
+            res.set(boost::beast::http::field::content_type, constants::content_type);
+            res.keep_alive(req->keep_alive() && !req->need_eof());
+            res.body().assign({begin(buffer), end(buffer)});
+            res.prepare_payload();
+            return res;
+        };
 
         auto const not_found = [&req, &target]
-            {
-                response_type res{boost::beast::http::status::not_found, req->version()};
-                res.set(boost::beast::http::field::server, constants::server_name);
-                res.set(boost::beast::http::field::content_type, constants::content_type);
-                res.keep_alive(req->keep_alive() && !req->need_eof());
-                res.body() = "The resource \"" + std::string(target) + "\" was not found.";
-                res.prepare_payload();
-                return res;
-            };
+        {
+            response_type res{boost::beast::http::status::not_found, req->version()};
+            res.set(boost::beast::http::field::server, constants::server_name);
+            res.set(boost::beast::http::field::content_type, constants::content_type);
+            res.keep_alive(req->keep_alive() && !req->need_eof());
+            res.body() = "The resource \"" + std::string(target) + "\" was not found.";
+            res.prepare_payload();
+            return res;
+        };
 
         auto const server_error =
             [&req](boost::beast::string_view what)
-            {
-                response_type res{boost::beast::http::status::internal_server_error, req->version()};
-                res.set(boost::beast::http::field::server, constants::server_name);
-                res.set(boost::beast::http::field::content_type, constants::content_type);
-                res.keep_alive(req->keep_alive() && !req->need_eof());
-                res.body() = "An error occurred: \"" + std::string(what) + "\"";
-                res.prepare_payload();
-                return res;
-            };
+        {
+            response_type res{boost::beast::http::status::internal_server_error, req->version()};
+            res.set(boost::beast::http::field::server, constants::server_name);
+            res.set(boost::beast::http::field::content_type, constants::content_type);
+            res.keep_alive(req->keep_alive() && !req->need_eof());
+            res.body() = "An error occurred: \"" + std::string(what) + "\"";
+            res.prepare_payload();
+            return res;
+        };
 
         auto const bad_request =
-        [&req](boost::beast::string_view why)
-            {
-                response_type res{boost::beast::http::status::bad_request, req->version()};
-                res.set(boost::beast::http::field::server, constants::server_name);
-                res.set(boost::beast::http::field::content_type, constants::content_type);
-                res.keep_alive(req->keep_alive() && !req->need_eof());
-                res.body() = why;
-                res.prepare_payload();
-                return res;
-            };
+            [&req](boost::beast::string_view why)
+        {
+            response_type res{boost::beast::http::status::bad_request, req->version()};
+            res.set(boost::beast::http::field::server, constants::server_name);
+            res.set(boost::beast::http::field::content_type, constants::content_type);
+            res.keep_alive(req->keep_alive() && !req->need_eof());
+            res.body() = why;
+            res.prepare_payload();
+            return res;
+        };
 
         if (target.empty())
         {
@@ -274,8 +274,8 @@ private:
         if (iter == end(executors_))
         {
             utility::handle_error<exception::server>(error_handler_,
-                    "[nanorpc::http::detail::server::session::handle_request] ",
-                    "Resource \"", target, "\" not found.");
+                                                     "[nanorpc::http::detail::server::session::handle_request] ",
+                                                     "Resource \"", target, "\" not found.");
 
             reply(not_found());
 
@@ -286,8 +286,8 @@ private:
         if (!executor)
         {
             utility::handle_error<exception::server>(error_handler_,
-                    "[nanorpc::http::detail::server::session::handle_request] ",
-                    "No exicutor.");
+                                                     "[nanorpc::http::detail::server::session::handle_request] ",
+                                                     "No exicutor.");
 
             reply(server_error("Empty exicutor."));
 
@@ -299,8 +299,8 @@ private:
         if (content.empty())
         {
             utility::handle_error<exception::server>(error_handler_,
-                    "[nanorpc::http::detail::server::session::handle_request] ",
-                    "The request has no a content.");
+                                                     "[nanorpc::http::detail::server::session::handle_request] ",
+                                                     "The request has no a content.");
 
             reply(bad_request("No content."));
 
@@ -321,8 +321,8 @@ private:
             reply(server_error("Handling error."));
 
             utility::handle_error<exception::server>(error_handler_, e,
-                    "[nanorpc::http::detail::server::session::handle_request] ",
-                    "Failed to handler request.");
+                                                     "[nanorpc::http::detail::server::session::handle_request] ",
+                                                     "Failed to handler request.");
 
             return;
         }
@@ -335,11 +335,11 @@ class listener final
 public:
     using session_ptr = std::shared_ptr<session>;
     using session_factory  = std::function<session_ptr (boost::asio::ip::tcp::socket,
-            core::type::executor_map const &, core::type::error_handler const &)>;
+                                                      core::type::executor_map const &, core::type::error_handler const &)>;
 
     listener(boost::asio::io_context &context, boost::asio::ip::tcp::endpoint const &endpoint,
-            session_factory make_session,
-            core::type::executor_map &executors, core::type::error_handler &error_handler)
+             session_factory make_session,
+             core::type::executor_map &executors, core::type::error_handler &error_handler)
         : make_session_{std::move(make_session)}
         , executors_{executors}
         , error_handler_{error_handler}
@@ -368,7 +368,7 @@ public:
 
     void run()
     {
-        utility::post(context_, [self = shared_from_this()] { self->accept(); }, error_handler_ );
+        utility::post(context_.get_executor(), [self = shared_from_this()] { self->accept(); }, error_handler_ );
     }
 
 private:
@@ -385,41 +385,41 @@ private:
         try
         {
             acceptor_.async_accept(socket_,
-                    [self = this] (boost::system::error_code const &ec)
-                    {
-                        try
-                        {
-                            if (ec)
-                            {
-                                if (ec != boost::asio::error::operation_aborted)
-                                {
-                                    utility::handle_error<exception::server>(self->error_handler_,
-                                            std::make_exception_ptr(std::runtime_error{ec.message()}),
-                                            "[nanorpc::http::detail::listener::accept] ",
-                                            "Failed to accept connection.");
-                                }
-                            }
-                            else
-                            {
-                                self->make_session_(std::move(self->socket_),
-                                        self->executors_, self->error_handler_)->run();
-                            }
-                        }
-                        catch (std::exception const &e)
-                        {
-                            utility::handle_error<exception::server>(self->error_handler_, e,
-                                    "[nanorpc::http::detail::listener::accept] ",
-                                    "Failed to process the accept method.");
-                        }
-                        utility::post(self->context_, [self] { self->accept(); }, self->error_handler_ );
-                    }
-                );
+                                   [self = this] (boost::system::error_code const &ec)
+                                   {
+                                       try
+                                       {
+                                           if (ec)
+                                           {
+                                               if (ec != boost::asio::error::operation_aborted)
+                                               {
+                                                   utility::handle_error<exception::server>(self->error_handler_,
+                                                                                            std::make_exception_ptr(std::runtime_error{ec.message()}),
+                                                                                            "[nanorpc::http::detail::listener::accept] ",
+                                                                                            "Failed to accept connection.");
+                                               }
+                                           }
+                                           else
+                                           {
+                                               self->make_session_(std::move(self->socket_),
+                                                                   self->executors_, self->error_handler_)->run();
+                                           }
+                                       }
+                                       catch (std::exception const &e)
+                                       {
+                                           utility::handle_error<exception::server>(self->error_handler_, e,
+                                                                                    "[nanorpc::http::detail::listener::accept] ",
+                                                                                    "Failed to process the accept method.");
+                                       }
+                                       utility::post(self->context_.get_executor(), [self] { self->accept(); }, self->error_handler_ );
+                                   }
+                                   );
         }
         catch (std::exception const &e)
         {
             utility::handle_error<exception::server>(error_handler_, e,
-                    "[nanorpc::http::detail::listener::accept] ",
-                    "Failed to call asynk_accept.");
+                                                     "[nanorpc::http::detail::listener::accept] ",
+                                                     "Failed to call asynk_accept.");
         }
     }
 };
@@ -432,13 +432,13 @@ public:
     server& operator = (server const &) = delete;
 
     server(std::string_view address, std::string_view port, std::size_t workers,
-            core::type::executor_map executors, core::type::error_handler error_handler)
+           core::type::executor_map executors, core::type::error_handler error_handler)
         : executors_{std::move(executors)}
         , error_handler_{std::move(error_handler)}
         , workers_count_{std::max<int>(1, workers)}
         , context_{workers_count_}
         , endpoint_{boost::asio::ip::make_address(address),
-                static_cast<unsigned short>(std::stol(port.data()))}
+                    static_cast<unsigned short>(std::stol(port.data()))}
     {
     }
 
@@ -454,8 +454,8 @@ public:
         catch (std::exception const &e)
         {
             utility::handle_error<exception::server>(error_handler_, e,
-                    "[nanorpc::http::server::~sserver] ",
-                    "Failed to stop server.");
+                                                     "[nanorpc::http::server::~sserver] ",
+                                                     "Failed to stop server.");
         }
     }
 
@@ -474,21 +474,21 @@ public:
         for (auto i = workers_count_ ; i ; --i)
         {
             workers.emplace_back(
-                    [self = this]
+                [self = this]
+                {
+                    try
                     {
-                        try
-                        {
-                            self->context_.run();
-                        }
-                        catch (std::exception const &e)
-                        {
-                            utility::handle_error<exception::server>(self->error_handler_, e,
-                                    "[nanorpc::http::server::run] ",
-                                    "Failed to run server.");
-
-                            std::exit(EXIT_FAILURE);
-                        }
+                        self->context_.run();
                     }
+                    catch (std::exception const &e)
+                    {
+                        utility::handle_error<exception::server>(self->error_handler_, e,
+                                                                 "[nanorpc::http::server::run] ",
+                                                                 "Failed to run server.");
+
+                        std::exit(EXIT_FAILURE);
+                    }
+                }
                 );
         }
 
@@ -504,21 +504,21 @@ public:
         listener_.reset();
         context_.stop();
         for_each(begin(workers_), end(workers_), [&] (std::thread &t)
-                {
-                    try
-                    {
-                        t.join();
-                    }
-                    catch (std::exception const &e)
-                    {
-                        utility::handle_error<exception::server>(error_handler_, e,
-                                "[nanorpc::http::server::stop] ",
-                                "Failed to stop server.");
+                 {
+                     try
+                     {
+                         t.join();
+                     }
+                     catch (std::exception const &e)
+                     {
+                         utility::handle_error<exception::server>(error_handler_, e,
+                                                                  "[nanorpc::http::server::stop] ",
+                                                                  "Failed to stop server.");
 
-                        std::exit(EXIT_FAILURE);
-                    }
-                }
-            );
+                         std::exit(EXIT_FAILURE);
+                     }
+                 }
+                 );
 
         workers_.clear();
     }
@@ -532,8 +532,8 @@ protected:
     using session_ptr = listener::session_ptr;
 
     virtual session_ptr make_session(boost::asio::ip::tcp::socket socket,
-            core::type::executor_map const &executors,
-            core::type::error_handler const &error_handler) = 0;
+                                     core::type::executor_map const &executors,
+                                     core::type::error_handler const &error_handler) = 0;
 
 private:
     using threads_type = std::vector<std::thread>;
@@ -559,8 +559,8 @@ public:
 
 private:
     virtual session_ptr make_session(boost::asio::ip::tcp::socket socket,
-            core::type::executor_map const &executors,
-            core::type::error_handler const &error_handler) override final
+                                     core::type::executor_map const &executors,
+                                     core::type::error_handler const &error_handler) override final
     {
         return std::make_shared<session>(std::move(socket), executors, error_handler);
     }
@@ -585,30 +585,30 @@ private:
         virtual void read(buffer_ptr buffer, request_ptr request, on_completed_func on_read) override final
         {
             boost::beast::http::async_read(get_socket(), *buffer, *request,
-                    boost::asio::bind_executor(get_strand(),
-                            [func = std::move(on_read), buffer, request]
-                            (boost::system::error_code const &ec, auto)
-                            { func(ec); }
-                        )
-                    );
+                                           boost::asio::bind_executor(get_strand(),
+                                                                      [func = std::move(on_read), buffer, request]
+                                                                      (boost::system::error_code const &ec, auto)
+                                                                      { func(ec); }
+                                                                      )
+                                           );
         }
 
         virtual void write(response_ptr response, on_completed_func on_write) override final
         {
             boost::beast::http::async_write(get_socket(), *response,
-                    boost::asio::bind_executor(get_strand(),
-                            [func = std::move(on_write), response]
-                            (boost::system::error_code const &ec, auto) { func(ec); }
-                        )
-                );
+                                            boost::asio::bind_executor(get_strand(),
+                                                                       [func = std::move(on_write), response]
+                                                                       (boost::system::error_code const &ec, auto) { func(ec); }
+                                                                       )
+                                            );
         }
     };
 };
 
 server::server(std::string_view address, std::string_view port, std::size_t workers,
-        core::type::executor_map executors, core::type::error_handler error_handler)
+               core::type::executor_map executors, core::type::error_handler error_handler)
     : impl_{std::make_shared<impl>(std::move(address), std::move(port), workers,
-            std::move(executors), std::move(error_handler))}
+                                   std::move(executors), std::move(error_handler))}
 {
 }
 
@@ -643,7 +643,7 @@ class server::impl final
 {
 public:
     impl(boost::asio::ssl::context ssl_context, std::string_view address, std::string_view port,
-            std::size_t workers, core::type::executor_map executors, core::type::error_handler error_handler)
+         std::size_t workers, core::type::executor_map executors, core::type::error_handler error_handler)
         : server{std::move(address), std::move(port), workers, std::map(executors), std::move(error_handler)}
         , ssl_context_{std::move(ssl_context)}
     {
@@ -653,8 +653,8 @@ private:
     boost::asio::ssl::context ssl_context_;
 
     virtual session_ptr make_session(boost::asio::ip::tcp::socket socket,
-            core::type::executor_map const &executors,
-            core::type::error_handler const &error_handler) override final
+                                     core::type::executor_map const &executors,
+                                     core::type::error_handler const &error_handler) override final
     {
         return std::make_shared<session>(ssl_context_, std::move(socket), executors, error_handler);
     }
@@ -681,43 +681,43 @@ private:
         virtual void handshake(on_completed_func on_handshake) override final
         {
             stream_->async_handshake(boost::asio::ssl::stream_base::server, boost::asio::bind_executor(get_strand(),
-                    [func = std::move(on_handshake)] (boost::system::error_code const &ec) { func(ec); } ));
+                                                                                                       [func = std::move(on_handshake)] (boost::system::error_code const &ec) { func(ec); } ));
         }
 
         virtual void close(boost::system::error_code &ec) override final
         {
             boost::ignore_unused(ec);
             stream_->async_shutdown([] (boost::system::error_code const &ec)
-                    { boost::ignore_unused(ec); } );
+                                    { boost::ignore_unused(ec); } );
         }
 
         virtual void read(buffer_ptr buffer, request_ptr request, on_completed_func on_read) override final
         {
             boost::beast::http::async_read(*stream_, *buffer, *request,
-                    boost::asio::bind_executor(get_strand(),
-                            [func = std::move(on_read), buffer, request]
-                            (boost::system::error_code const &ec, auto)
-                            { func(ec); }
-                        )
-                    );
+                                           boost::asio::bind_executor(get_strand(),
+                                                                      [func = std::move(on_read), buffer, request]
+                                                                      (boost::system::error_code const &ec, auto)
+                                                                      { func(ec); }
+                                                                      )
+                                           );
         }
 
         virtual void write(response_ptr response, on_completed_func on_write) override final
         {
             boost::beast::http::async_write(*stream_, *response,
-                    boost::asio::bind_executor(get_strand(),
-                            [func = std::move(on_write), response]
-                            (boost::system::error_code const &ec, auto) { func(ec); }
-                        )
-                );
+                                            boost::asio::bind_executor(get_strand(),
+                                                                       [func = std::move(on_write), response]
+                                                                       (boost::system::error_code const &ec, auto) { func(ec); }
+                                                                       )
+                                            );
         }
     };
 };
 
 server::server(boost::asio::ssl::context context, std::string_view address, std::string_view port,
-        std::size_t workers, core::type::executor_map executors, core::type::error_handler error_handler)
+               std::size_t workers, core::type::executor_map executors, core::type::error_handler error_handler)
     : impl_{std::make_shared<impl>(std::move(context), std::move(address), std::move(port),
-            workers, std::move(executors), std::move(error_handler))}
+                                   workers, std::move(executors), std::move(error_handler))}
 {
 }
 

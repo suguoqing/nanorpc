@@ -27,7 +27,7 @@ namespace nanorpc::http::detail::utility
 
 template <typename T>
 inline std::enable_if_t<std::is_invocable_v<T>, void>
-post(boost::asio::io_context &context, T func, core::type::error_handler error_handler = {}) noexcept
+post(const boost::asio::any_io_executor &context, T func, core::type::error_handler error_handler = {}) noexcept
 {
     try
     {
