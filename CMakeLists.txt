@@ -115,7 +115,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_LC}-config.cmake
 )
 
 if (NOT NANORPC_PURE_CORE)
-    add_library (${PROJECT_LC} STATIC ${SOURCES})
+    add_library (${PROJECT_LC} SHARED ${SOURCES})
     target_link_libraries (${PROJECT_LC} ${LIBRARIES})
 endif()
 
